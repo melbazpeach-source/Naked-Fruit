@@ -4,15 +4,10 @@ import { storage } from "./storage";
 import { insertEnquirySchema, insertArtistSchema, insertEventSchema, insertMediaItemSchema, insertDonationSchema, insertDsClientSchema } from "@shared/schema";
 import { setupAuth, registerAuthRoutes, isAuthenticated, isAdmin, isSuperAdmin } from "./replit_integrations/auth";
 import { appendToSheet, isGoogleSheetsConnected } from "./google-sheets";
+import { put } from "@vercel/blob";
 import multer from "multer";
 import path from "path";
-import fs from "fs";
 import Papa from "papaparse";
-
-const uploadsDir = path.join(process.cwd(), "client", "public", "uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
 
 const ALLOWED_MIMES = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml"];
 const FONT_MIMES = ["font/ttf", "font/otf", "font/woff", "font/woff2", "application/font-woff", "application/font-woff2", "application/x-font-ttf", "application/x-font-otf", "application/octet-stream"];
@@ -36,20 +31,26 @@ function isValidEmbedUrl(url: string | undefined | null): boolean {
 }
 
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: uploadsDir,
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname);
-      const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
-      cb(null, name);
-    },
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_MIMES.includes(file.mimetype)) {
       cb(null, true);
     } else {
       cb(new Error("Only image files are allowed"));
+    }
+  },
+});
+
+const fontUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if ([".ttf", ".otf", ".woff", ".woff2"].includes(ext) || FONT_MIMES.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only font files (.ttf, .otf, .woff, .woff2) are allowed"));
     }
   },
 });
@@ -91,14 +92,14 @@ export async function registerRoutes(
 
   app.get("/api/bootstrap-admin", isAuthenticated, async (req: any, res) => {
     try {
-      const claims = req.user?.claims;
-      if (!claims?.sub) return res.status(401).json({ message: "Not authenticated" });
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ message: "Not authenticated" });
       const existingAdmins = await storage.getUsers();
       const hasSuperAdmin = existingAdmins.some((u: any) => u.role === "superadmin");
       if (hasSuperAdmin) {
         return res.status(403).json({ message: "Superadmin already exists" });
       }
-      await storage.updateUserRole(claims.sub, "superadmin");
+      await storage.updateUserRole(userId, "superadmin");
       res.json({ message: "You are now superadmin. Refresh the page." });
     } catch (error) {
       console.error("Bootstrap admin error:", error);
@@ -370,42 +371,32 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/upload", isAdmin, upload.single("file"), (req, res) => {
+  // Image upload via Vercel Blob
+  app.post("/api/upload", isAdmin, upload.single("file"), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ message: "No file uploaded" });
-      const url = `/uploads/${req.file.filename}`;
-      res.json({ url });
+      const blob = await put(
+        `uploads/${Date.now()}-${req.file.originalname}`,
+        req.file.buffer,
+        { access: "public", contentType: req.file.mimetype }
+      );
+      res.json({ url: blob.url });
     } catch (error) {
       console.error("Error uploading file:", error);
       res.status(500).json({ message: "Failed to upload file" });
     }
   });
 
-  const fontUpload = multer({
-    storage: multer.diskStorage({
-      destination: uploadsDir,
-      filename: (_req, file, cb) => {
-        const ext = path.extname(file.originalname);
-        const name = `font-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`;
-        cb(null, name);
-      },
-    }),
-    limits: { fileSize: 10 * 1024 * 1024 },
-    fileFilter: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      if ([".ttf", ".otf", ".woff", ".woff2"].includes(ext) || FONT_MIMES.includes(file.mimetype)) {
-        cb(null, true);
-      } else {
-        cb(new Error("Only font files (.ttf, .otf, .woff, .woff2) are allowed"));
-      }
-    },
-  });
-
-  app.post("/api/upload/font", isAdmin, fontUpload.single("file"), (req, res) => {
+  // Font upload via Vercel Blob
+  app.post("/api/upload/font", isAdmin, fontUpload.single("file"), async (req, res) => {
     try {
       if (!req.file) return res.status(400).json({ message: "No file uploaded" });
-      const url = `/uploads/${req.file.filename}`;
-      res.json({ url, filename: req.file.originalname });
+      const blob = await put(
+        `fonts/${Date.now()}-${req.file.originalname}`,
+        req.file.buffer,
+        { access: "public", contentType: req.file.mimetype }
+      );
+      res.json({ url: blob.url, filename: req.file.originalname });
     } catch (error) {
       console.error("Error uploading font:", error);
       res.status(500).json({ message: "Failed to upload font" });
@@ -565,7 +556,7 @@ export async function registerRoutes(
       if (!role || !["user", "admin"].includes(role)) {
         return res.status(400).json({ message: "Role must be 'user' or 'admin'" });
       }
-      const currentUserId = req.user?.claims?.sub;
+      const currentUserId = req.user?.id;
       if (currentUserId && currentUserId === req.params.id) {
         return res.status(403).json({ message: "You cannot change your own role" });
       }
