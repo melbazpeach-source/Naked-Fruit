@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import express, { type Request, Response, NextFunction } from "express";
-import { registerRoutes } from "../server/routes";
+import { registerRoutes } from "./routes";
 import { createServer } from "http";
 
 const app = express();
@@ -19,7 +19,7 @@ let initialized = false;
 async function ensureInitialized() {
   if (initialized) return;
 
-  const { seedDatabase } = await import("../server/seed");
+  const { seedDatabase } = await import("./seed");
   await seedDatabase().catch((err) => console.error("Seed error:", err));
 
   const httpServer = createServer(app);

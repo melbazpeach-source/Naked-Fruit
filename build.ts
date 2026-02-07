@@ -62,7 +62,7 @@ async function buildAll() {
 
   console.log("building api function...");
   await esbuild({
-    entryPoints: ["api/index.ts"],
+    entryPoints: ["server/api-handler.ts"],
     platform: "node",
     bundle: true,
     format: "esm",
